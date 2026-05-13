@@ -25,5 +25,5 @@ code: .
 command: >-
   python src/train.py
   --n_plzs 100
-  --n_estimators 100
+  --n_estimators 200
   --max_depth 15
