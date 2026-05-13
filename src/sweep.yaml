@@ -1,0 +1,76 @@
+$schema: https://azuremlschemas.azureedge.net/latest/sweepJob.schema.json
+type: sweep
+
+display_name: flood-scoring-hyperdrive-sweep
+experiment_name: hochwasser-risiko-scoring
+description: "HyperDrive Sweep — Bayesian HP-Optimierung mit Bandit Early Termination"
+
+# Bayesian: lernt aus vorherigen Runs welche HP-Kombis vielversprechend sind
+# (besser als random, teurer als grid, ideal für kontinuierliche Räume)
+sampling_algorithm: bayesian
+
+search_space:
+  n_estimators:
+    type: choice
+    values: [100, 150, 200, 300]
+  max_depth:
+    type: choice
+    values: [5, 8, 10, 15, 20]
+  min_samples_split:
+    type: choice
+    values: [2, 5, 10]
+  min_samples_leaf:
+    type: choice
+    values: [1, 2, 4]
+
+# Primärmetrik: test_r2 maximieren (aus mlflow.log_metrics in train.py)
+objective:
+  primary_metric: test_r2
+  goal: maximize
+
+limits:
+  max_total_trials: 20        # max. Versuche gesamt
+  max_concurrent_trials: 4    # parallel auf flood-compute (4 Nodes max)
+  timeout_minutes: 90         # Gesamtlimit — Pipeline hängt sonst endlos
+
+# Bandit Early Termination:
+# Beendet einen Run wenn er mehr als 15% schlechter ist als der bisher beste Run.
+# delay_evaluation: die ersten 3 Runs laufen immer durch (Baseline aufbauen)
+early_termination:
+  type: bandit
+  evaluation_interval: 1
+  slack_factor: 0.15
+  delay_evaluation: 3
+
+trial:
+  code: .
+  command: >-
+    python train.py
+    --n_plzs 500
+    --n_estimators ${{search_space.n_estimators}}
+    --max_depth ${{search_space.max_depth}}
+    --min_samples_split ${{search_space.min_samples_split}}
+    --min_samples_leaf ${{search_space.min_samples_leaf}}
+    --output_dir ${{outputs.model_dir}}
+
+  environment:
+    image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:latest
+    conda_file:
+      name: flood-env
+      channels: [conda-forge]
+      dependencies:
+        - python=3.10
+        - pip
+        - pip:
+          - scikit-learn
+          - pandas
+          - numpy
+          - mlflow
+          - azureml-mlflow
+
+  compute: azureml:flood-compute
+
+  outputs:
+    model_dir:
+      type: uri_folder
+      mode: rw_mount
