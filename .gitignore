@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+*.pkl
+*.egg-info/
+.venv/
+venv/
+
+# Azure — NIEMALS committen!
+config.json
+.azure/
+**/local_credentials*
+
+# Outputs
+outputs/
+artifacts/
+*.log
+
+# OS
+.DS_Store

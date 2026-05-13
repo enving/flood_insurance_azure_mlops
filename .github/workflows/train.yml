@@ -1,0 +1,77 @@
+name: Train & Register Model
+
+# Wann wird dieser Workflow ausgelöst?
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/train.py"      # Nur wenn train.py geändert wurde
+      - "src/job.yaml"
+  workflow_dispatch:        # Auch manuell startbar (Button in GitHub UI)
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Code auschecken
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2. Azure CLI installieren + einloggen
+      #    AZURE_CREDENTIALS kommt aus GitHub Secrets (nie im Code!)
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # 3. Azure ML CLI Extension installieren
+      - name: Install Azure ML CLI
+        run: az extension add -n ml --yes
+
+      # 4. Training Job starten
+      - name: Submit Training Job
+        id: training
+        run: |
+          JOB_NAME=$(az ml job create \
+            --file src/job.yaml \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --workspace-name ${{ secrets.AZURE_ML_WORKSPACE }} \
+            --query "name" -o tsv)
+          echo "job_name=$JOB_NAME" >> $GITHUB_OUTPUT
+          echo "🚀 Job gestartet: $JOB_NAME"
+
+      # 5. Warten bis Job fertig
+      - name: Wait for Job
+        run: |
+          az ml job stream \
+            --name ${{ steps.training.outputs.job_name }} \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --workspace-name ${{ secrets.AZURE_ML_WORKSPACE }}
+
+      # 6. Job-Status prüfen — bei Fehler: Pipeline bricht ab
+      - name: Check Job Status
+        run: |
+          STATUS=$(az ml job show \
+            --name ${{ steps.training.outputs.job_name }} \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --workspace-name ${{ secrets.AZURE_ML_WORKSPACE }} \
+            --query "status" -o tsv)
+          echo "Status: $STATUS"
+          if [ "$STATUS" != "Completed" ]; then
+            echo "❌ Job fehlgeschlagen: $STATUS"
+            exit 1
+          fi
+          echo "✅ Training erfolgreich"
+
+      # 7. Modell in Registry registrieren (nur wenn Training erfolgreich)
+      - name: Register Model
+        run: |
+          az ml model create \
+            --name hochwasser-scoring-model \
+            --path azureml://jobs/${{ steps.training.outputs.job_name }}/outputs/default \
+            --type custom_model \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --workspace-name ${{ secrets.AZURE_ML_WORKSPACE }} \
+            --tags stage=staging git_sha=${{ github.sha }}
+          echo "📦 Modell in Registry registriert"

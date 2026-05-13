@@ -1,0 +1,29 @@
+$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+
+display_name: flood-scoring-training-run
+experiment_name: hochwasser-risiko-scoring
+description: "RandomForest Training mit MLflow Logging"
+
+compute: azureml:flood-compute
+
+environment:
+  image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:latest
+  conda_file:
+    name: flood-env
+    channels: [conda-forge]
+    dependencies:
+      - python=3.10
+      - pip
+      - pip:
+        - scikit-learn
+        - pandas
+        - numpy
+        - mlflow
+        - azureml-mlflow
+
+code: .
+command: >-
+  python src/train.py
+  --n_plzs 100
+  --n_estimators 100
+  --max_depth 15
