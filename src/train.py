@@ -2,11 +2,17 @@
 train.py — Hochwasser-Scoring MLOps
 Wird von Azure ML als Command Job ausgeführt.
 Liest Hyperparameter als CLI-Args, loggt alles via MLflow.
+
+MLflow sklearn flavor wird genutzt (statt pickle) damit:
+  - Azure ML Model Registry das Modell versioniert verwalten kann
+  - Das Responsible AI (RAI) Dashboard Feature Importance + Fairness auslesen kann
+  - Modell später per mlflow.pyfunc.load_model() geladen werden kann (framework-unabhängig)
 """
-import argparse, json, pickle
+import argparse, json
 import numpy as np
 import pandas as pd
 import mlflow
+import mlflow.sklearn
 from pathlib import Path
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestRegressor
@@ -93,12 +99,41 @@ def main(args):
     print(f"train_r2={metrics['train_r2']}  test_r2={metrics['test_r2']}  "
           f"overfit_gap={metrics['overfit_gap']}  RMSE={metrics['test_rmse']:,.0f}€")
 
-    # Outputs in output_dir (Azure ML erfasst automatisch)
-    with open(out / "flood_model.pkl", "wb") as f:
-        pickle.dump(model, f)
-    (out / "model_metadata.json").write_text(
-        json.dumps({**metrics, "features": features, "basis_praemie_eur": 150}, indent=2)
+    # ── MLflow sklearn flavor ────────────────────────────────────────────────
+    # Warum kein pickle?
+    #   pickle = rohe Bytes, Azure ML weiß nicht was drin ist
+    #   mlflow.sklearn = strukturiertes Format mit Signatur, Schema, Conda-Env
+    #   → Azure Model Registry kann versionieren, RAI Dashboard kann auslesen
+    input_schema  = mlflow.models.infer_signature(X_train, y_pred_train).inputs
+    output_schema = mlflow.models.infer_signature(X_train, y_pred_train).outputs
+    signature     = mlflow.models.ModelSignature(inputs=input_schema, outputs=output_schema)
+
+    mlflow.sklearn.log_model(
+        sk_model=model,
+        artifact_path="flood_model",      # Pfad im MLflow Run
+        signature=signature,              # Input/Output Schema → RAI Dashboard
+        registered_model_name="hochwasser-scoring-model",  # direkt in Registry
+        input_example=X_test.iloc[:5],   # Beispiel für Dokumentation
     )
+    print("✅ Modell als MLflow sklearn flavor geloggt + in Registry registriert")
+
+    # Test-Daten speichern → RAI Dashboard braucht sie für Fairness-/Drift-Analyse
+    # (Was ist eine "High-Risk" Entscheidung? Prämie > 300€ = High Risk für Versicherten)
+    X_test_out = X_test.copy()
+    X_test_out["y_true"]      = y_test.values
+    X_test_out["y_pred"]      = y_pred
+    X_test_out["risk_score"]  = ((y_pred - y_pred.min()) / (y_pred.max() - y_pred.min()) * 100).round(1)
+    X_test_out["praemie_eur"] = (150 * (0.5 + X_test_out["risk_score"] / 100 * 2.0)).round(2)
+    X_test_out["high_risk"]   = (X_test_out["risk_score"] > 66).astype(int)  # EU AI Act: High Risk Flag
+    X_test_out.to_csv(out / "test_data_for_rai.csv", index=False)
+    mlflow.log_artifact(str(out / "test_data_for_rai.csv"), artifact_path="rai_data")
+
+    # Metadata
+    (out / "model_metadata.json").write_text(
+        json.dumps({**metrics, "features": features, "basis_praemie_eur": 150,
+                    "mlflow_flavor": "sklearn", "rai_ready": True}, indent=2)
+    )
+    mlflow.log_artifact(str(out / "model_metadata.json"))
     print(f"✅ Outputs gespeichert → {out}")
 
 
